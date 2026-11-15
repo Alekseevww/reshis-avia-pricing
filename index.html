@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Решись Авиа - Внутренний портал</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body class="bg-light">
+
+<div class="container mt-5">
+    <h2 class="mb-4 text-center">✈️ Динамическое ценообразование "Решись Авиа"</h2>
+
+    <!-- БЛОК АВТОРИЗАЦИИ -->
+    <div id="authBlock" class="row justify-content-center">
+        <div class="col-md-5">
+            <div class="card shadow-sm">
+                <div class="card-body">
+                    <h5 class="card-title text-center mb-3">Вход для сотрудников</h5>
+                    <div class="mb-3">
+                        <input type="text" id="username" class="form-control" placeholder="Логин (например, admin)">
+                    </div>
+                    <div class="mb-3">
+                        <input type="password" id="password" class="form-control" placeholder="Пароль">
+                    </div>
+                    <div class="d-flex justify-content-between">
+                        <button onclick="login()" class="btn btn-primary w-100 me-1">Войти</button>
+                        <button onclick="register()" class="btn btn-outline-secondary w-100 ms-1">Регистрация</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- БЛОК ПРИЛОЖЕНИЯ (Скрыт по умолчанию) -->
+    <div id="appBlock" class="d-none">
+        <div class="d-flex justify-content-end mb-3">
+            <button onclick="logout()" class="btn btn-sm btn-danger">Выйти из системы</button>
+        </div>
+        <div class="row">
+            <div class="col-md-4">
+                <div class="card shadow-sm">
+                    <div class="card-body">
+                        <form id="predictionForm">
+                            <div class="mb-3">
+                                <label class="form-label">Маршрут</label>
+                                <select class="form-select" id="route" required>
+                                    <option value="MOW-AER">Москва - Сочи (MOW-AER)</option>
+                                    <option value="MOW-LED">Москва - Санкт-Петербург (MOW-LED)</option>
+                                </select>
+                            </div>
+                            <div class="mb-3">
+                                <label class="form-label">Дата вылета</label>
+                                <input type="date" class="form-control" id="date" min="2026-06-01" max="2026-07-01" value="2026-06-12" required>
+                            </div>
+                            <div class="mb-3">
+                                <label class="form-label">Цена билета (₽)</label>
+                                <input type="number" class="form-control" id="price" value="8000" required>
+                            </div>
+                            <button type="submit" class="btn btn-success w-100">Рассчитать прогноз</button>
+                        </form>
+                    </div>
+                </div>
+                
+                <div class="card shadow-sm mt-3 d-none" id="resultCard">
+                    <div class="card-body text-center">
+                        <h5 class="card-title">Медианный прогноз (0.5)</h5>
+                        <p class="fs-5 mb-1">Всего мест: <strong id="resSeats"></strong></p>
+                        <p class="fs-5 mb-1">Хотят купить: <strong id="resDesired"></strong></p>
+                        <hr>
+                        <p class="fs-4 text-success mb-0">Будет продано: <strong id="resBuyers"></strong></p>
+                    </div>
+                </div>
+            </div>
+
+            <div class="col-md-8">
+                <div class="card shadow-sm">
+                    <div class="card-body">
+                        <h5 class="card-title text-center">Распределение спроса по квантилям</h5>
+                        <canvas id="demandChart" height="150"></canvas>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    let myChart = null;
+
+    // --- ФУНКЦИИ АВТОРИЗАЦИИ ---
+    async function register() {
+        const u = document.getElementById('username').value;
+        const p = document.getElementById('password').value;
+        if (!u || !p) return alert("Введите логин и пароль!");
+        
+        const res = await fetch('http://127.0.0.1:8000/register', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({username: u, password: p})
+        });
+        const data = await res.json();
+        alert(data.message || data.detail);
+    }
+
+    async function login() {
+        const u = document.getElementById('username').value;
+        const p = document.getElementById('password').value;
+        if (!u || !p) return alert("Введите логин и пароль!");
+
+        const res = await fetch('http://127.0.0.1:8000/login', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({username: u, password: p})
+        });
+        const data = await res.json();
+        
+        if (data.access_token) {
+            localStorage.setItem('token', data.access_token);
+            document.getElementById('authBlock').classList.add('d-none');
+            document.getElementById('appBlock').classList.remove('d-none');
+        } else {
+            alert(data.detail);
+        }
+    }
+
+    function logout() {
+        localStorage.removeItem('token');
+        document.getElementById('appBlock').classList.add('d-none');
+        document.getElementById('authBlock').classList.remove('d-none');
+        document.getElementById('resultCard').classList.add('d-none');
+        if (myChart) myChart.destroy();
+    }
+
+    // --- ФУНКЦИЯ РАСЧЕТА (С ТОКЕНОМ) ---
+    document.getElementById('predictionForm').addEventListener('submit', async function(e) {
+        e.preventDefault();
+        const token = localStorage.getItem('token');
+        if (!token) return logout(); // Защита от хитрецов
+
+        const requestData = {
+            route: document.getElementById('route').value,
+            date: document.getElementById('date').value,
+            price: parseFloat(document.getElementById('price').value)
+        };
+
+        try {
+            const response = await fetch('http://127.0.0.1:8000/predict', {
+                method: 'POST',
+                headers: { 
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${token}` // Передаем токен серверу!
+                },
+                body: JSON.stringify(requestData)
+            });
+
+            if (!response.ok) {
+                const errorData = await response.json();
+                if (response.status === 401) logout(); // Если токен протух
+                alert('Ошибка: ' + errorData.detail);
+                return;
+            }
+
+            const data = await response.json();
+            document.getElementById('resultCard').classList.remove('d-none');
+            document.getElementById('resSeats').innerText = data.seats;
+            document.getElementById('resDesired').innerText = data.median_desired;
+            document.getElementById('resBuyers').innerText = data.median_buyers;
+
+            const quantilesDemand = [];
+            for (let i = 1; i <= 9; i++) { quantilesDemand.push(data.quantiles_data[`0.${i}`].desired); }
+            
+            const ctx = document.getElementById('demandChart').getContext('2d');
+            if (myChart) myChart.destroy(); 
+            myChart = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: ['0.1', '0.2', '0.3', '0.4', '0.5', '0.6', '0.7', '0.8', '0.9'],
+                    datasets: [
+                        { label: 'Спрос', data: quantilesDemand, backgroundColor: 'rgba(54, 162, 235, 0.6)' },
+                        { label: 'Мест (Seats)', data: Array(9).fill(data.seats), type: 'line', borderColor: 'red', fill: false }
+                    ]
+                }
+            });
+        } catch (error) {
+            alert('Ошибка сервера!');
+        }
+    });
+</script>
+</body>
+</html>
